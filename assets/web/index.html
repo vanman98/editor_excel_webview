@@ -91,8 +91,7 @@
         }
 
         // ===== Change buffer (unique by sheet+r+c) =====
-        // key = `${sheetName}#${r}#${c}`
-        const __changes = {};
+        const __changes = {}; // key = `${sheetName}#${r}#${c}`
 
         function excelColName(col0) {
             let n = col0 + 1;
@@ -109,36 +108,56 @@
             return excelColName(c0) + String(r0 + 1);
         }
 
-        // Normalize luckysheet cell object:
-        // - value usually in v
-        // - display text in m
-        // - formula in f (nếu có)
         function normalizeCell(cell) {
             if (cell == null) return { value: null, formula: null, display: null };
-            if (typeof cell !== "object") return { value: cell, formula: null, display: String(cell) };
+            if (typeof cell !== "object")
+                return { value: cell, formula: null, display: String(cell) };
 
-            const value = (cell.v !== undefined) ? cell.v : null;
-            const display = (cell.m !== undefined) ? cell.m : (value != null ? String(value) : null);
-            const formula = (cell.f !== undefined && cell.f !== null) ? String(cell.f) : null;
+            const value = cell.v !== undefined ? cell.v : null;
+            const display = cell.m !== undefined ? cell.m : value != null ? String(value) : null;
+
+            // LuckySheet formula có thể là "SUM(A1:A2)" hoặc "=SUM(A1:A2)" tùy case
+            let formula = cell.f !== undefined && cell.f !== null ? String(cell.f) : null;
+            if (formula && !formula.startsWith("=")) formula = "=" + formula;
 
             return { value, formula, display };
         }
 
         function getActiveSheetMeta() {
+            // ưu tiên API nếu có
             try {
                 if (luckysheet.getSheet) {
                     const s = luckysheet.getSheet();
-                    if (s && s.name != null) return { name: s.name, order: s.order ?? 0, index: s.index ?? 0 };
+                    if (s && s.name != null)
+                        return { name: s.name, order: s.order ?? 0, index: s.index ?? 0 };
                 }
             } catch (_) { }
 
-            // fallback: find status==1 from getAllSheets()
+            // fallback: status==1
             try {
                 const all = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
-                const active = all.find(x => x && x.status === 1) || all[0] || { name: "Sheet1", order: 0, index: 0 };
+                const active = all.find((x) => x && x.status === 1) || all[0] || { name: "Sheet1", order: 0, index: 0 };
                 return { name: active.name || "Sheet1", order: active.order ?? 0, index: active.index ?? 0 };
             } catch (_) {
                 return { name: "Sheet1", order: 0, index: 0 };
+            }
+        }
+
+        // đọc cell object hiện tại từ luckysheetfile (để cứu trường hợp hook thiếu newCell)
+        function getCellObjectByOrder(order, r0, c0) {
+            try {
+                if (!luckysheet.getluckysheetfile) return null;
+                const files = luckysheet.getluckysheetfile();
+                if (!files || !files.length) return null;
+
+                const sh = files.find((f) => Number(f.order ?? 0) === Number(order));
+                const data = sh && sh.data ? sh.data : null;
+                if (!data) return null;
+                const row = data[r0];
+                if (!row) return null;
+                return row[c0] ?? null;
+            } catch (_) {
+                return null;
             }
         }
 
@@ -148,8 +167,11 @@
             const c0 = Number(c);
             if (Number.isNaN(r0) || Number.isNaN(c0)) return;
 
+            // nếu newCell null/undefined → đọc cell hiện tại từ file
+            const realNew = newCell ?? getCellObjectByOrder(sheet.order, r0, c0);
+
             const oldN = normalizeCell(oldCell);
-            const newN = normalizeCell(newCell);
+            const newN = normalizeCell(realNew);
 
             const key = `${sheet.name}#${r0}#${c0}`;
             const now = Date.now();
@@ -166,7 +188,7 @@
                     new: newN,
                     firstTs: now,
                     lastTs: now,
-                    count: 1
+                    count: 1,
                 };
             } else {
                 __changes[key].new = newN;
@@ -177,11 +199,18 @@
             const total = Object.keys(__changes).length;
             setChangeCount(total);
 
-            // push realtime change to Flutter
             postToFlutter({ type: "cell_change", change: __changes[key], total });
         }
 
+        function commitEditIfNeeded() {
+            try {
+                // đảm bảo ô đang gõ được commit thành cellUpdated
+                if (luckysheet.exitEditMode) luckysheet.exitEditMode();
+            } catch (_) { }
+        }
+
         window.exportChangesToFlutter = function () {
+            commitEditIfNeeded();
             const list = Object.values(__changes);
             postToFlutter({ type: "export_changes", total: list.length, changes: list });
         };
@@ -195,18 +224,19 @@
         function createWithHooks(options) {
             options.hook = options.hook || {};
 
-            // cellUpdated signature có thể khác giữa versions
-            // nên mình lấy args linh hoạt: (r, c, oldValue, newValue, ...)
+            // hook chịu đòn: cố lấy r/c/old/new theo args
             options.hook.cellUpdated = function () {
                 const args = Array.from(arguments);
+
+                // best guess:
                 const r = args[0];
                 const c = args[1];
-                const oldCell = args[2];
-                const newCell = args[3];
+                const oldCell = args.length >= 3 ? args[2] : null;
+                const newCell = args.length >= 4 ? args[3] : null;
+
                 recordCellChange(r, c, oldCell, newCell);
             };
 
-            // optional: sheet switching
             options.hook.sheetActivate = function () {
                 const s = getActiveSheetMeta();
                 postToFlutter({ type: "sheet_activate", sheet: s });
@@ -220,7 +250,7 @@
                 container: "luckysheet",
                 title: "POC",
                 lang: "en",
-                data: [{ name: "Sheet1", index: 0, status: 1, order: 0, celldata: [] }]
+                data: [{ name: "Sheet1", index: 0, status: 1, order: 0, celldata: [] }],
             });
             postToFlutter({ type: "web_ready" });
         }
@@ -234,7 +264,7 @@
                 for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
 
                 const blob = new Blob([bytes], {
-                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 });
 
                 const file = new File([blob], filename || "import.xlsx");
@@ -247,7 +277,7 @@
                         createWithHooks({
                             container: "luckysheet",
                             data: exportJson.sheets,
-                            title: (exportJson.info && exportJson.info.name) ? exportJson.info.name : "Imported",
+                            title: exportJson.info && exportJson.info.name ? exportJson.info.name : "Imported",
                         });
 
                         postToFlutter({ type: "import_ok", sheetCount: exportJson.sheets.length });
@@ -261,78 +291,9 @@
             }
         };
 
-        // ===== Export JSON (full sheets object) =====
-        function exportJson() {
-            try {
-                const data = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
-                postToFlutter({ type: "export_json", data });
-            } catch (e) {
-                postToFlutter({ type: "export_err", err: String(e) });
-            }
-        }
-
-        // ===== Export XLSX (data-only) =====
-        function cellToValue(cell) {
-            if (cell == null) return null;
-            if (typeof cell !== "object") return cell;
-            if (cell.f !== undefined && cell.f !== null && String(cell.f).startsWith("=")) return String(cell.f); // demo: keep formula text
-            if (cell.v !== undefined && cell.v !== null) return cell.v;
-            if (cell.m !== undefined && cell.m !== null) return cell.m;
-            return null;
-        }
-
-        function sheetDataToAoa(sheetData) {
-            const aoa = [];
-            for (let r = 0; r < sheetData.length; r++) {
-                const row = sheetData[r] || [];
-                const outRow = [];
-                for (let c = 0; c < row.length; c++) {
-                    outRow.push(cellToValue(row[c]));
-                }
-                aoa.push(outRow);
-            }
-            return aoa;
-        }
-
-        function exportXlsxToFlutter() {
-            try {
-                try { luckysheet.exitEditMode && luckysheet.exitEditMode(); } catch (_) { }
-
-                const sheets = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
-                if (!sheets.length) {
-                    postToFlutter({ type: "export_err", err: "No sheets found." });
-                    return;
-                }
-
-                const wb = XLSX.utils.book_new();
-
-                for (const sh of sheets) {
-                    const order = Number(sh.order ?? 0);
-                    const name = (sh.name || `Sheet${order + 1}`).toString().slice(0, 31);
-
-                    let data2d = [];
-                    if (luckysheet.getSheetData) {
-                        data2d = luckysheet.getSheetData({ order }) || [];
-                    } else if (sh.data) {
-                        data2d = sh.data;
-                    } else {
-                        data2d = [];
-                    }
-
-                    const aoa = sheetDataToAoa(data2d);
-                    const ws = XLSX.utils.aoa_to_sheet(aoa);
-                    XLSX.utils.book_append_sheet(wb, ws, name);
-                }
-
-                const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
-                postToFlutter({ type: "export_xlsx", fileName: "edited.xlsx", b64 });
-            } catch (e) {
-                postToFlutter({ type: "export_err", err: String(e) });
-            }
-        }
-
         initBlank();
     </script>
+
 </body>
 
 </html>

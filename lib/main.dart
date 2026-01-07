@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter/foundation.dart';
 
 void main() {
   runApp(
@@ -44,6 +45,32 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (req) {
+            final url = req.url;
+
+            // ✅ luôn cho phép local
+            final isLocal =
+                url.startsWith('flutter-asset://') ||
+                url.startsWith('file://') ||
+                url.startsWith('about:blank');
+
+            if (isLocal) return NavigationDecision.navigate;
+
+            // DEV: tạm cho CDN để bạn test nhanh
+            if (!kReleaseMode) {
+              final allowDevCdn = url.startsWith('https://cdn.jsdelivr.net');
+              return allowDevCdn
+                  ? NavigationDecision.navigate
+                  : NavigationDecision.prevent;
+            }
+
+            // PROD: chặn hết ngoài local
+            return NavigationDecision.prevent;
+          },
+        ),
+      )
       ..addJavaScriptChannel(
         'Flutter',
         onMessageReceived: (msg) => _handleWebMessage(msg.message),
@@ -181,6 +208,37 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
     await _controller.runJavaScript('exportXlsxToFlutter();');
   }
 
+  Future<void> _saveDraftChangesJson() async {
+    if (_changes.isEmpty) {
+      setState(() => _status = 'No changes to save.');
+      return;
+    }
+
+    final savePath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save draft changes JSON',
+      fileName: 'draft_changes.json',
+      type: FileType.custom,
+      allowedExtensions: const ['json'],
+    );
+    if (savePath == null) return;
+
+    final outFile = File(
+      savePath.endsWith('.json') ? savePath : '$savePath.json',
+    );
+
+    final payload = {
+      "docId": "demo-doc", // sau này BE cấp
+      "userId": "demo-user", // sau này auth cấp
+      "clientTs": DateTime.now().millisecondsSinceEpoch,
+      "changes": _changes.values.toList(),
+    };
+
+    final pretty = const JsonEncoder.withIndent('  ').convert(payload);
+    await outFile.writeAsString(pretty, flush: true);
+
+    setState(() => _status = 'Saved draft JSON: ${p.basename(outFile.path)}');
+  }
+
   Future<void> _saveB64AsXlsx(String b64, String suggestedName) async {
     final bytes = base64Decode(b64);
 
@@ -233,9 +291,9 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
             icon: const Icon(Icons.delete_outline),
           ),
           IconButton(
-            tooltip: 'Export & Save .xlsx (data-only)',
-            onPressed: _requestExportAndSaveXlsx,
-            icon: const Icon(Icons.save_as),
+            tooltip: 'Save Draft JSON',
+            onPressed: _saveDraftChangesJson,
+            icon: const Icon(Icons.download),
           ),
           const SizedBox(width: 8),
         ],

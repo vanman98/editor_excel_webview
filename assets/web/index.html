@@ -6,10 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <title>Luckysheet in Flutter WebView</title>
 
-    <!-- Luckysheet CSS (CDN) -->
+    <!-- Luckysheet CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/assets/iconfont/iconfont.css" />
+
 
     <style>
         html,
@@ -25,7 +27,6 @@
             gap: 10px;
             padding: 0 12px;
             border-bottom: 1px solid #ddd;
-            font-family: system-ui, -apple-system, Arial;
         }
 
         #luckysheet {
@@ -38,6 +39,7 @@
         }
 
         .hint {
+            font-family: system-ui, -apple-system, Arial;
             font-size: 12px;
             color: #666;
         }
@@ -47,7 +49,8 @@
 <body>
     <div id="toolbar">
         <button onclick="exportJson()">Export JSON (to Flutter)</button>
-        <div class="hint" id="status">Loading...</div>
+        <button onclick="exportXlsxToFlutter()">Export XLSX (to Flutter)</button>
+        <div class="hint">Import .xlsx gọi từ Flutter → window.importXlsxBase64(...)</div>
     </div>
 
     <div id="luckysheet"></div>
@@ -59,67 +62,31 @@
     <!-- LuckyExcel (xlsx -> luckysheet json) -->
     <script src="https://cdn.jsdelivr.net/npm/luckyexcel/dist/luckyexcel.umd.js"></script>
 
+    <!-- SheetJS (luckysheet data -> xlsx) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
     <script>
         function postToFlutter(obj) {
             try {
-                if (typeof Flutter !== "undefined" && Flutter.postMessage) {
-                    Flutter.postMessage(JSON.stringify(obj));
+                if (window.Flutter && window.Flutter.postMessage) {
+                    window.Flutter.postMessage(JSON.stringify(obj));
                 }
             } catch (_) { }
         }
 
-        function setStatus(text) {
-            const el = document.getElementById("status");
-            if (el) el.textContent = text;
-        }
-
         function initBlank() {
-            try {
-                luckysheet.create({
-                    container: "luckysheet",
-                    title: "POC",
-                    lang: "en",
-                    data: [
-                        { name: "Sheet1", index: 0, status: 1, order: 0, celldata: [] }
-                    ]
-                });
-                setStatus("Ready (blank sheet).");
-            } catch (e) {
-                setStatus("Init error: " + String(e));
-                postToFlutter({ type: "page_err", err: String(e) });
-            }
+            luckysheet.create({
+                container: "luckysheet",
+                title: "POC",
+                lang: "en",
+                data: [{ name: "Sheet1", index: 0, status: 1, order: 0, celldata: [] }]
+            });
+            postToFlutter({ type: "web_ready" });
         }
-
-        // ===== Chunk base64 receiving (avoid huge JS string crash) =====
-        window.__b64buf = "";
-
-        window.pushB64Chunk = function (chunk, isLast, filename) {
-            try {
-                window.__b64buf += chunk;
-                if (isLast) {
-                    const b64 = window.__b64buf;
-                    window.__b64buf = "";
-                    window.importXlsxBase64(b64, filename);
-                }
-            } catch (e) {
-                window.__b64buf = "";
-                setStatus("Chunk error: " + String(e));
-                postToFlutter({ type: "import_err", err: String(e) });
-            }
-        };
 
         // Called by Flutter: window.importXlsxBase64(base64, filename)
         window.importXlsxBase64 = function (b64, filename) {
             try {
-                setStatus("Importing...");
-
-                if (typeof LuckyExcel === "undefined") {
-                    throw new Error("LuckyExcel is undefined. CDN blocked or script not loaded.");
-                }
-                if (typeof luckysheet === "undefined") {
-                    throw new Error("luckysheet is undefined. CDN blocked or script not loaded.");
-                }
-
                 const binary = atob(b64);
                 const len = binary.length;
                 const bytes = new Uint8Array(len);
@@ -133,51 +100,97 @@
 
                 LuckyExcel.transformExcelToLucky(
                     file,
-                    function (exportJson) {
-                        try { luckysheet.destroy(); } catch (_) { }
-
+                    function (exportJson, luckysheetfile) {
+                        try { luckysheet.destroy(); } catch (e) { }
                         luckysheet.create({
                             container: "luckysheet",
                             data: exportJson.sheets,
-                            title: (exportJson.info && exportJson.info.name) ? exportJson.info.name : "Imported"
+                            title: (exportJson.info && exportJson.info.name) ? exportJson.info.name : "Imported",
                         });
 
-                        setStatus("Import OK. sheets=" + exportJson.sheets.length);
                         postToFlutter({ type: "import_ok", sheetCount: exportJson.sheets.length });
                     },
                     function (err) {
-                        setStatus("Import ERROR: " + String(err));
                         postToFlutter({ type: "import_err", err: String(err) });
                     }
                 );
             } catch (e) {
-                setStatus("Import ERROR: " + String(e));
                 postToFlutter({ type: "import_err", err: String(e) });
             }
         };
 
         function exportJson() {
             try {
-                const data = (luckysheet.getAllSheets) ? luckysheet.getAllSheets() : [];
-                postToFlutter({ type: "export_json", data: data });
-                setStatus("Export JSON OK.");
+                const data = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
+                postToFlutter({ type: "export_json", data });
             } catch (e) {
-                setStatus("Export ERROR: " + String(e));
                 postToFlutter({ type: "export_err", err: String(e) });
             }
         }
 
-        // Tell Flutter page loaded + libs status
-        window.addEventListener("load", function () {
-            postToFlutter({
-                type: "page_loaded",
-                luckysheet: typeof luckysheet,
-                luckyexcel: typeof LuckyExcel
-            });
+        function cellToValue(cell) {
+            if (cell == null) return null;
+            if (typeof cell !== "object") return cell;
+            // ưu tiên v (giá trị), fallback m (hiển thị)
+            if (cell.v !== undefined && cell.v !== null) return cell.v;
+            if (cell.m !== undefined && cell.m !== null) return cell.m;
+            return null;
+        }
 
-            // Init blank after load
-            initBlank();
-        });
+        function sheetDataToAoa(sheetData) {
+            const aoa = [];
+            for (let r = 0; r < sheetData.length; r++) {
+                const row = sheetData[r] || [];
+                const outRow = [];
+                for (let c = 0; c < row.length; c++) {
+                    outRow.push(cellToValue(row[c]));
+                }
+                aoa.push(outRow);
+            }
+            return aoa;
+        }
+
+        // Export XLSX (data-only) -> base64 -> Flutter
+        function exportXlsxToFlutter() {
+            try {
+                // cố gắng commit ô đang edit
+                try { luckysheet.exitEditMode && luckysheet.exitEditMode(); } catch (_) { }
+
+                const sheets = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
+                if (!sheets.length) {
+                    postToFlutter({ type: "export_err", err: "No sheets found." });
+                    return;
+                }
+
+                const wb = XLSX.utils.book_new();
+
+                for (const sh of sheets) {
+                    const order = Number(sh.order ?? 0);
+                    const name = (sh.name || `Sheet${order + 1}`).toString().slice(0, 31);
+
+                    // Official API: getSheetData({order}) returns luckysheetfile[i].data :contentReference[oaicite:2]{index=2}
+                    let data2d = [];
+                    if (luckysheet.getSheetData) {
+                        data2d = luckysheet.getSheetData({ order }) || [];
+                    } else if (sh.data) {
+                        data2d = sh.data;
+                    } else {
+                        data2d = [];
+                    }
+
+                    const aoa = sheetDataToAoa(data2d);
+                    const ws = XLSX.utils.aoa_to_sheet(aoa);
+                    XLSX.utils.book_append_sheet(wb, ws, name);
+                }
+
+                const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+                postToFlutter({ type: "export_xlsx", fileName: "edited.xlsx", b64 });
+            } catch (e) {
+                postToFlutter({ type: "export_err", err: String(e) });
+            }
+        }
+
+        initBlank();
     </script>
 </body>
 

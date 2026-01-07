@@ -12,7 +12,6 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/assets/iconfont/iconfont.css" />
 
-
     <style>
         html,
         body {
@@ -27,6 +26,7 @@
             gap: 10px;
             padding: 0 12px;
             border-bottom: 1px solid #ddd;
+            font-family: system-ui, -apple-system, Arial;
         }
 
         #luckysheet {
@@ -39,18 +39,29 @@
         }
 
         .hint {
-            font-family: system-ui, -apple-system, Arial;
             font-size: 12px;
             color: #666;
+        }
+
+        .pill {
+            font-size: 12px;
+            background: #f1f1f1;
+            padding: 4px 8px;
+            border-radius: 999px;
         }
     </style>
 </head>
 
 <body>
     <div id="toolbar">
-        <button onclick="exportJson()">Export JSON (to Flutter)</button>
-        <button onclick="exportXlsxToFlutter()">Export XLSX (to Flutter)</button>
-        <div class="hint">Import .xlsx gọi từ Flutter → window.importXlsxBase64(...)</div>
+        <button onclick="exportJson()">Export JSON</button>
+        <button onclick="exportXlsxToFlutter()">Export XLSX</button>
+
+        <button onclick="exportChangesToFlutter()">Export Changes</button>
+        <button onclick="clearChanges()">Clear Changes</button>
+
+        <span class="pill" id="changeCount">changes=0</span>
+        <div class="hint">Edit cell → Flutter sẽ nhận change realtime.</div>
     </div>
 
     <div id="luckysheet"></div>
@@ -74,8 +85,138 @@
             } catch (_) { }
         }
 
+        function setChangeCount(n) {
+            const el = document.getElementById("changeCount");
+            if (el) el.textContent = `changes=${n}`;
+        }
+
+        // ===== Change buffer (unique by sheet+r+c) =====
+        // key = `${sheetName}#${r}#${c}`
+        const __changes = {};
+
+        function excelColName(col0) {
+            let n = col0 + 1;
+            let s = "";
+            while (n > 0) {
+                const r = (n - 1) % 26;
+                s = String.fromCharCode(65 + r) + s;
+                n = Math.floor((n - 1) / 26);
+            }
+            return s;
+        }
+
+        function a1Address(r0, c0) {
+            return excelColName(c0) + String(r0 + 1);
+        }
+
+        // Normalize luckysheet cell object:
+        // - value usually in v
+        // - display text in m
+        // - formula in f (nếu có)
+        function normalizeCell(cell) {
+            if (cell == null) return { value: null, formula: null, display: null };
+            if (typeof cell !== "object") return { value: cell, formula: null, display: String(cell) };
+
+            const value = (cell.v !== undefined) ? cell.v : null;
+            const display = (cell.m !== undefined) ? cell.m : (value != null ? String(value) : null);
+            const formula = (cell.f !== undefined && cell.f !== null) ? String(cell.f) : null;
+
+            return { value, formula, display };
+        }
+
+        function getActiveSheetMeta() {
+            try {
+                if (luckysheet.getSheet) {
+                    const s = luckysheet.getSheet();
+                    if (s && s.name != null) return { name: s.name, order: s.order ?? 0, index: s.index ?? 0 };
+                }
+            } catch (_) { }
+
+            // fallback: find status==1 from getAllSheets()
+            try {
+                const all = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
+                const active = all.find(x => x && x.status === 1) || all[0] || { name: "Sheet1", order: 0, index: 0 };
+                return { name: active.name || "Sheet1", order: active.order ?? 0, index: active.index ?? 0 };
+            } catch (_) {
+                return { name: "Sheet1", order: 0, index: 0 };
+            }
+        }
+
+        function recordCellChange(r, c, oldCell, newCell) {
+            const sheet = getActiveSheetMeta();
+            const r0 = Number(r);
+            const c0 = Number(c);
+            if (Number.isNaN(r0) || Number.isNaN(c0)) return;
+
+            const oldN = normalizeCell(oldCell);
+            const newN = normalizeCell(newCell);
+
+            const key = `${sheet.name}#${r0}#${c0}`;
+            const now = Date.now();
+
+            if (!__changes[key]) {
+                __changes[key] = {
+                    sheetName: sheet.name,
+                    sheetOrder: sheet.order,
+                    sheetIndex: sheet.index,
+                    r: r0,
+                    c: c0,
+                    a1: a1Address(r0, c0),
+                    old: oldN,
+                    new: newN,
+                    firstTs: now,
+                    lastTs: now,
+                    count: 1
+                };
+            } else {
+                __changes[key].new = newN;
+                __changes[key].lastTs = now;
+                __changes[key].count += 1;
+            }
+
+            const total = Object.keys(__changes).length;
+            setChangeCount(total);
+
+            // push realtime change to Flutter
+            postToFlutter({ type: "cell_change", change: __changes[key], total });
+        }
+
+        window.exportChangesToFlutter = function () {
+            const list = Object.values(__changes);
+            postToFlutter({ type: "export_changes", total: list.length, changes: list });
+        };
+
+        window.clearChanges = function () {
+            for (const k in __changes) delete __changes[k];
+            setChangeCount(0);
+            postToFlutter({ type: "changes_cleared" });
+        };
+
+        function createWithHooks(options) {
+            options.hook = options.hook || {};
+
+            // cellUpdated signature có thể khác giữa versions
+            // nên mình lấy args linh hoạt: (r, c, oldValue, newValue, ...)
+            options.hook.cellUpdated = function () {
+                const args = Array.from(arguments);
+                const r = args[0];
+                const c = args[1];
+                const oldCell = args[2];
+                const newCell = args[3];
+                recordCellChange(r, c, oldCell, newCell);
+            };
+
+            // optional: sheet switching
+            options.hook.sheetActivate = function () {
+                const s = getActiveSheetMeta();
+                postToFlutter({ type: "sheet_activate", sheet: s });
+            };
+
+            luckysheet.create(options);
+        }
+
         function initBlank() {
-            luckysheet.create({
+            createWithHooks({
                 container: "luckysheet",
                 title: "POC",
                 lang: "en",
@@ -84,7 +225,7 @@
             postToFlutter({ type: "web_ready" });
         }
 
-        // Called by Flutter: window.importXlsxBase64(base64, filename)
+        // ===== Import XLSX =====
         window.importXlsxBase64 = function (b64, filename) {
             try {
                 const binary = atob(b64);
@@ -100,9 +241,10 @@
 
                 LuckyExcel.transformExcelToLucky(
                     file,
-                    function (exportJson, luckysheetfile) {
+                    function (exportJson) {
                         try { luckysheet.destroy(); } catch (e) { }
-                        luckysheet.create({
+
+                        createWithHooks({
                             container: "luckysheet",
                             data: exportJson.sheets,
                             title: (exportJson.info && exportJson.info.name) ? exportJson.info.name : "Imported",
@@ -119,6 +261,7 @@
             }
         };
 
+        // ===== Export JSON (full sheets object) =====
         function exportJson() {
             try {
                 const data = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
@@ -128,10 +271,11 @@
             }
         }
 
+        // ===== Export XLSX (data-only) =====
         function cellToValue(cell) {
             if (cell == null) return null;
             if (typeof cell !== "object") return cell;
-            // ưu tiên v (giá trị), fallback m (hiển thị)
+            if (cell.f !== undefined && cell.f !== null && String(cell.f).startsWith("=")) return String(cell.f); // demo: keep formula text
             if (cell.v !== undefined && cell.v !== null) return cell.v;
             if (cell.m !== undefined && cell.m !== null) return cell.m;
             return null;
@@ -150,10 +294,8 @@
             return aoa;
         }
 
-        // Export XLSX (data-only) -> base64 -> Flutter
         function exportXlsxToFlutter() {
             try {
-                // cố gắng commit ô đang edit
                 try { luckysheet.exitEditMode && luckysheet.exitEditMode(); } catch (_) { }
 
                 const sheets = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
@@ -168,7 +310,6 @@
                     const order = Number(sh.order ?? 0);
                     const name = (sh.name || `Sheet${order + 1}`).toString().slice(0, 31);
 
-                    // Official API: getSheetData({order}) returns luckysheetfile[i].data :contentReference[oaicite:2]{index=2}
                     let data2d = [];
                     if (luckysheet.getSheetData) {
                         data2d = luckysheet.getSheetData({ order }) || [];

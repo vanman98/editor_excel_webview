@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Luckysheet in Flutter WebView</title>
+
+    <!-- Luckysheet CSS (CDN) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
+
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        #toolbar {
+            height: 44px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 12px;
+            border-bottom: 1px solid #ddd;
+            font-family: system-ui, -apple-system, Arial;
+        }
+
+        #luckysheet {
+            width: 100%;
+            height: calc(100% - 45px);
+        }
+
+        button {
+            height: 30px;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="toolbar">
+        <button onclick="exportJson()">Export JSON (to Flutter)</button>
+        <div class="hint" id="status">Loading...</div>
+    </div>
+
+    <div id="luckysheet"></div>
+
+    <!-- Luckysheet JS -->
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js"></script>
+
+    <!-- LuckyExcel (xlsx -> luckysheet json) -->
+    <script src="https://cdn.jsdelivr.net/npm/luckyexcel/dist/luckyexcel.umd.js"></script>
+
+    <script>
+        function postToFlutter(obj) {
+            try {
+                if (typeof Flutter !== "undefined" && Flutter.postMessage) {
+                    Flutter.postMessage(JSON.stringify(obj));
+                }
+            } catch (_) { }
+        }
+
+        function setStatus(text) {
+            const el = document.getElementById("status");
+            if (el) el.textContent = text;
+        }
+
+        function initBlank() {
+            try {
+                luckysheet.create({
+                    container: "luckysheet",
+                    title: "POC",
+                    lang: "en",
+                    data: [
+                        { name: "Sheet1", index: 0, status: 1, order: 0, celldata: [] }
+                    ]
+                });
+                setStatus("Ready (blank sheet).");
+            } catch (e) {
+                setStatus("Init error: " + String(e));
+                postToFlutter({ type: "page_err", err: String(e) });
+            }
+        }
+
+        // ===== Chunk base64 receiving (avoid huge JS string crash) =====
+        window.__b64buf = "";
+
+        window.pushB64Chunk = function (chunk, isLast, filename) {
+            try {
+                window.__b64buf += chunk;
+                if (isLast) {
+                    const b64 = window.__b64buf;
+                    window.__b64buf = "";
+                    window.importXlsxBase64(b64, filename);
+                }
+            } catch (e) {
+                window.__b64buf = "";
+                setStatus("Chunk error: " + String(e));
+                postToFlutter({ type: "import_err", err: String(e) });
+            }
+        };
+
+        // Called by Flutter: window.importXlsxBase64(base64, filename)
+        window.importXlsxBase64 = function (b64, filename) {
+            try {
+                setStatus("Importing...");
+
+                if (typeof LuckyExcel === "undefined") {
+                    throw new Error("LuckyExcel is undefined. CDN blocked or script not loaded.");
+                }
+                if (typeof luckysheet === "undefined") {
+                    throw new Error("luckysheet is undefined. CDN blocked or script not loaded.");
+                }
+
+                const binary = atob(b64);
+                const len = binary.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+
+                const blob = new Blob([bytes], {
+                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                });
+
+                const file = new File([blob], filename || "import.xlsx");
+
+                LuckyExcel.transformExcelToLucky(
+                    file,
+                    function (exportJson) {
+                        try { luckysheet.destroy(); } catch (_) { }
+
+                        luckysheet.create({
+                            container: "luckysheet",
+                            data: exportJson.sheets,
+                            title: (exportJson.info && exportJson.info.name) ? exportJson.info.name : "Imported"
+                        });
+
+                        setStatus("Import OK. sheets=" + exportJson.sheets.length);
+                        postToFlutter({ type: "import_ok", sheetCount: exportJson.sheets.length });
+                    },
+                    function (err) {
+                        setStatus("Import ERROR: " + String(err));
+                        postToFlutter({ type: "import_err", err: String(err) });
+                    }
+                );
+            } catch (e) {
+                setStatus("Import ERROR: " + String(e));
+                postToFlutter({ type: "import_err", err: String(e) });
+            }
+        };
+
+        function exportJson() {
+            try {
+                const data = (luckysheet.getAllSheets) ? luckysheet.getAllSheets() : [];
+                postToFlutter({ type: "export_json", data: data });
+                setStatus("Export JSON OK.");
+            } catch (e) {
+                setStatus("Export ERROR: " + String(e));
+                postToFlutter({ type: "export_err", err: String(e) });
+            }
+        }
+
+        // Tell Flutter page loaded + libs status
+        window.addEventListener("load", function () {
+            postToFlutter({
+                type: "page_loaded",
+                luckysheet: typeof luckysheet,
+                luckyexcel: typeof LuckyExcel
+            });
+
+            // Init blank after load
+            initBlank();
+        });
+    </script>
+</body>
+
+</html>

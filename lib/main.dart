@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:editor_excel_webview/sheet_card.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -31,6 +32,44 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
 
   /// key: sheet#r#c
   final Map<String, Map<String, dynamic>> _changes = {};
+  Map<String, List<Map<String, dynamic>>> _groupChangesBySheet() {
+    final map = <String, List<Map<String, dynamic>>>{};
+
+    for (final ch in _changes.values) {
+      final sheet = (ch['sheetName'] ?? 'Unknown').toString();
+      (map[sheet] ??= []).add(ch);
+    }
+
+    // Sort cells inside each sheet: latest first
+    for (final entry in map.entries) {
+      entry.value.sort((a, b) {
+        final bt = (b['lastTs'] ?? 0) as int;
+        final at = (a['lastTs'] ?? 0) as int;
+        return bt.compareTo(at);
+      });
+    }
+
+    return map;
+  }
+
+  String _fmtTs(int? ms) {
+    if (ms == null || ms <= 0) return '-';
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    // hiển thị đơn giản cho tester
+    return '${dt.hour.toString().padLeft(2, '0')}:'
+        '${dt.minute.toString().padLeft(2, '0')}:'
+        '${dt.second.toString().padLeft(2, '0')}';
+  }
+
+  String _displayValueOrFormula(Map<String, dynamic> cellObj) {
+    // ưu tiên formula nếu có
+    final f = cellObj['formula'];
+    if (f != null && f.toString().trim().isNotEmpty) return f.toString();
+    final v = cellObj['value'];
+    if (v == null) return '(empty)';
+    final s = v.toString();
+    return s.isEmpty ? '(empty)' : s;
+  }
 
   String _makeKey(Map<String, dynamic> change) {
     final sheet = (change['sheetName'] ?? '').toString();
@@ -270,7 +309,8 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
         (a, b) =>
             ((b['lastTs'] ?? 0) as int).compareTo((a['lastTs'] ?? 0) as int),
       );
-
+    final grouped = _groupChangesBySheet();
+    final sheetNames = grouped.keys.toList()..sort();
     return Scaffold(
       appBar: AppBar(
         title: const Text('POC: Luckysheet in WebView'),
@@ -321,42 +361,53 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
                   flex: 1,
                   child: Container(
                     padding: const EdgeInsets.all(12),
-                    child: changesList.isEmpty
+                    child: _changes.isEmpty
                         ? const Center(
                             child: Text(
                               'No changes yet.\nEdit some cells to see logs.',
+                              textAlign: TextAlign.center,
                             ),
                           )
-                        : ListView.separated(
-                            itemCount: changesList.length,
-                            separatorBuilder: (_, __) =>
-                                const Divider(height: 1),
-                            itemBuilder: (context, i) {
-                              final ch = changesList[i];
-                              final sheet = (ch['sheetName'] ?? '').toString();
-                              final a1 = (ch['a1'] ?? '').toString();
-                              final oldObj =
-                                  (ch['old'] as Map?)
-                                      ?.cast<String, dynamic>() ??
-                                  {};
-                              final newObj =
-                                  (ch['new'] as Map?)
-                                      ?.cast<String, dynamic>() ??
-                                  {};
-                              final oldV = oldObj['value'];
-                              final newV = newObj['value'];
-                              final oldF = oldObj['formula'];
-                              final newF = newObj['formula'];
-                              final count = ch['count'];
-
-                              return ListTile(
-                                dense: true,
-                                title: Text('$sheet · $a1  (x$count)'),
-                                subtitle: Text(
-                                  'old: ${oldF ?? oldV}\nnew: ${newF ?? newV}',
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Header summary
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.black12),
+                                  borderRadius: BorderRadius.circular(8),
                                 ),
-                              );
-                            },
+                                child: Text(
+                                  'Sheets changed: ${sheetNames.length}\nTotal changed cells: ${_changes.length}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+
+                              // Sheet sections
+                              Expanded(
+                                child: ListView.separated(
+                                  itemCount: sheetNames.length,
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(height: 8),
+                                  itemBuilder: (context, idx) {
+                                    final sheet = sheetNames[idx];
+                                    final items = grouped[sheet] ?? const [];
+
+                                    return SheetChangesCard(
+                                      sheetName: sheet,
+                                      items: items,
+                                      fmtTs: _fmtTs,
+                                      displayValueOrFormula:
+                                          _displayValueOrFormula,
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
                           ),
                   ),
                 ),

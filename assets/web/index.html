@@ -54,14 +54,12 @@
 
 <body>
     <div id="toolbar">
-        <button onclick="exportJson()">Export JSON</button>
-        <button onclick="exportXlsxToFlutter()">Export XLSX</button>
-
         <button onclick="exportChangesToFlutter()">Export Changes</button>
         <button onclick="clearChanges()">Clear Changes</button>
 
         <span class="pill" id="changeCount">changes=0</span>
-        <div class="hint">Edit cell → Flutter sẽ nhận change realtime.</div>
+        <span class="pill" id="sheetOpsCount">sheetOps=0</span>
+        <div class="hint">Edit cell / change style / add sheet → Flutter receives events.</div>
     </div>
 
     <div id="luckysheet"></div>
@@ -72,9 +70,6 @@
 
     <!-- LuckyExcel (xlsx -> luckysheet json) -->
     <script src="https://cdn.jsdelivr.net/npm/luckyexcel/dist/luckyexcel.umd.js"></script>
-
-    <!-- SheetJS (luckysheet data -> xlsx) -->
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
     <script>
         function postToFlutter(obj) {
@@ -90,8 +85,14 @@
             if (el) el.textContent = `changes=${n}`;
         }
 
-        // ===== Change buffer (unique by sheet+r+c) =====
-        const __changes = {}; // key = `${sheetName}#${r}#${c}`
+        function setSheetOpsCount(n) {
+            const el = document.getElementById("sheetOpsCount");
+            if (el) el.textContent = `sheetOps=${n}`;
+        }
+
+        // ===== Change buffer (unique by sheetId+r+c) =====
+        // key = `${sheetId}#${r}#${c}`
+        const __changes = {};
 
         function excelColName(col0) {
             let n = col0 + 1;
@@ -108,42 +109,56 @@
             return excelColName(c0) + String(r0 + 1);
         }
 
+        // ===== STYLE CAPTURE =====
+        function pickStyle(cell) {
+            if (!cell || typeof cell !== "object") return {};
+            // các key style thường gặp trong luckysheet cell
+            const keys = ["bg", "fc", "ff", "fs", "bl", "it", "ul", "cl", "ht", "vt", "tb", "tr", "ct", "bd"];
+            const out = {};
+            for (const k of keys) {
+                if (cell[k] !== undefined && cell[k] !== null) out[k] = cell[k];
+            }
+            return out;
+        }
+
         function normalizeCell(cell) {
-            if (cell == null) return { value: null, formula: null, display: null };
-            if (typeof cell !== "object")
-                return { value: cell, formula: null, display: String(cell) };
+            if (cell == null) return { value: null, formula: null, display: null, style: {} };
+            if (typeof cell !== "object") {
+                return { value: cell, formula: null, display: String(cell), style: {} };
+            }
 
             const value = cell.v !== undefined ? cell.v : null;
             const display = cell.m !== undefined ? cell.m : value != null ? String(value) : null;
 
-            // LuckySheet formula có thể là "SUM(A1:A2)" hoặc "=SUM(A1:A2)" tùy case
+            // formula có thể "SUM(...)" hoặc "=SUM(...)" → normalize luôn có "="
             let formula = cell.f !== undefined && cell.f !== null ? String(cell.f) : null;
             if (formula && !formula.startsWith("=")) formula = "=" + formula;
 
-            return { value, formula, display };
+            return { value, formula, display, style: pickStyle(cell) };
         }
 
         function getActiveSheetMeta() {
-            // ưu tiên API nếu có
             try {
                 if (luckysheet.getSheet) {
                     const s = luckysheet.getSheet();
-                    if (s && s.name != null)
-                        return { name: s.name, order: s.order ?? 0, index: s.index ?? 0 };
+                    if (s && s.name != null) {
+                        const id = (s.index ?? s.id ?? s.name ?? s.order ?? 0).toString();
+                        return { id, name: s.name, order: s.order ?? 0, index: s.index ?? 0 };
+                    }
                 }
             } catch (_) { }
 
-            // fallback: status==1
             try {
                 const all = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
                 const active = all.find((x) => x && x.status === 1) || all[0] || { name: "Sheet1", order: 0, index: 0 };
-                return { name: active.name || "Sheet1", order: active.order ?? 0, index: active.index ?? 0 };
+                const id = (active.index ?? active.id ?? active.name ?? active.order ?? 0).toString();
+                return { id, name: active.name || "Sheet1", order: active.order ?? 0, index: active.index ?? 0 };
             } catch (_) {
-                return { name: "Sheet1", order: 0, index: 0 };
+                return { id: "0", name: "Sheet1", order: 0, index: 0 };
             }
         }
 
-        // đọc cell object hiện tại từ luckysheetfile (để cứu trường hợp hook thiếu newCell)
+        // đọc cell object hiện tại từ luckysheetfile (cứu trường hợp hook thiếu newCell)
         function getCellObjectByOrder(order, r0, c0) {
             try {
                 if (!luckysheet.getluckysheetfile) return null;
@@ -167,17 +182,18 @@
             const c0 = Number(c);
             if (Number.isNaN(r0) || Number.isNaN(c0)) return;
 
-            // nếu newCell null/undefined → đọc cell hiện tại từ file
+            // nếu newCell null → đọc cell hiện tại từ file
             const realNew = newCell ?? getCellObjectByOrder(sheet.order, r0, c0);
 
             const oldN = normalizeCell(oldCell);
             const newN = normalizeCell(realNew);
 
-            const key = `${sheet.name}#${r0}#${c0}`;
+            const key = `${sheet.id}#${r0}#${c0}`;
             const now = Date.now();
 
             if (!__changes[key]) {
                 __changes[key] = {
+                    sheetId: sheet.id,
                     sheetName: sheet.name,
                     sheetOrder: sheet.order,
                     sheetIndex: sheet.index,
@@ -191,6 +207,8 @@
                     count: 1,
                 };
             } else {
+                __changes[key].sheetName = sheet.name; // rename sheet thì update name luôn
+                __changes[key].sheetOrder = sheet.order;
                 __changes[key].new = newN;
                 __changes[key].lastTs = now;
                 __changes[key].count += 1;
@@ -204,7 +222,6 @@
 
         function commitEditIfNeeded() {
             try {
-                // đảm bảo ô đang gõ được commit thành cellUpdated
                 if (luckysheet.exitEditMode) luckysheet.exitEditMode();
             } catch (_) { }
         }
@@ -221,19 +238,84 @@
             postToFlutter({ type: "changes_cleared" });
         };
 
+        // ===== Sheet watcher (add/rename/delete/reorder) =====
+        let __sheetWatchTimer = null;
+        let __sheetSnapshot = []; // [{id,name,order}]
+        let __sheetOpsTotal = 0;
+
+        function getSheetsMeta() {
+            const all = luckysheet.getAllSheets ? luckysheet.getAllSheets() : [];
+            const meta = all.map(s => {
+                const id = (s.index ?? s.id ?? s.name ?? s.order ?? 0).toString();
+                return {
+                    id,
+                    name: (s.name ?? "Sheet").toString(),
+                    order: Number(s.order ?? 0),
+                };
+            }).sort((a, b) => a.order - b.order);
+            return meta;
+        }
+
+        function diffSheets(prev, next) {
+            const ops = [];
+            const prevMap = new Map(prev.map(s => [s.id, s]));
+            const nextMap = new Map(next.map(s => [s.id, s]));
+
+            for (const n of next) {
+                if (!prevMap.has(n.id)) ops.push({ op: "sheet_added", sheet: n });
+            }
+            for (const p of prev) {
+                if (!nextMap.has(p.id)) ops.push({ op: "sheet_deleted", sheet: p });
+            }
+            for (const n of next) {
+                const p = prevMap.get(n.id);
+                if (!p) continue;
+                if (p.name !== n.name) ops.push({ op: "sheet_renamed", from: p.name, to: n.name, sheet: n });
+                if (Number(p.order) !== Number(n.order)) ops.push({ op: "sheet_reordered", from: p.order, to: n.order, sheet: n });
+            }
+            return ops;
+        }
+
+        function startSheetWatcher() {
+            try {
+                const cur = getSheetsMeta();
+                // nếu timer đã có → chỉ refresh snapshot (tránh tạo nhiều interval)
+                if (__sheetWatchTimer) {
+                    __sheetSnapshot = cur;
+                    return;
+                }
+
+                __sheetSnapshot = cur;
+                __sheetWatchTimer = setInterval(() => {
+                    try {
+                        const nowMeta = getSheetsMeta();
+                        const ops = diffSheets(__sheetSnapshot, nowMeta);
+                        if (ops.length) {
+                            __sheetSnapshot = nowMeta;
+                            __sheetOpsTotal += ops.length;
+                            setSheetOpsCount(__sheetOpsTotal);
+
+                            postToFlutter({
+                                type: "sheet_ops",
+                                ts: Date.now(),
+                                ops,
+                                sheets: nowMeta,
+                            });
+                        }
+                    } catch (_) { }
+                }, 400);
+            } catch (_) { }
+        }
+
         function createWithHooks(options) {
             options.hook = options.hook || {};
 
-            // hook chịu đòn: cố lấy r/c/old/new theo args
             options.hook.cellUpdated = function () {
                 const args = Array.from(arguments);
-
-                // best guess:
                 const r = args[0];
                 const c = args[1];
                 const oldCell = args.length >= 3 ? args[2] : null;
                 const newCell = args.length >= 4 ? args[3] : null;
-
                 recordCellChange(r, c, oldCell, newCell);
             };
 
@@ -243,6 +325,7 @@
             };
 
             luckysheet.create(options);
+            startSheetWatcher(); // IMPORTANT
         }
 
         function initBlank() {

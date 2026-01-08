@@ -30,14 +30,53 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
   String _status = 'Ready';
   bool _webReady = false;
 
-  /// key: sheet#r#c
+  /// key: sheetId#r#c
   final Map<String, Map<String, dynamic>> _changes = {};
-  Map<String, List<Map<String, dynamic>>> _groupChangesBySheet() {
+
+  /// sheetId -> {id,name,order}
+  final Map<String, Map<String, dynamic>> _sheetMetaById = {};
+
+  /// sheetId -> list of ops
+  final Map<String, List<Map<String, dynamic>>> _sheetOpsById = {};
+
+  String _makeKey(Map<String, dynamic> change) {
+    final sheetId = (change['sheetId'] ?? change['sheetName'] ?? '').toString();
+    final r = change['r'];
+    final c = change['c'];
+    return '$sheetId#$r#$c';
+  }
+
+  void _upsertSheetMetaFromChange(Map<String, dynamic> ch) {
+    final id = (ch['sheetId'] ?? ch['sheetName'] ?? '').toString();
+    if (id.isEmpty) return;
+    _sheetMetaById[id] = {
+      "id": id,
+      "name": (ch['sheetName'] ?? _sheetMetaById[id]?['name'] ?? 'Sheet')
+          .toString(),
+      "order": (ch['sheetOrder'] ?? _sheetMetaById[id]?['order'] ?? 0),
+    };
+  }
+
+  void _upsertSheetMetaFromSheetsList(List<dynamic> sheets) {
+    for (final s in sheets) {
+      final m = (s as Map).cast<String, dynamic>();
+      final id = (m['id'] ?? m['index'] ?? m['name'] ?? '').toString();
+      if (id.isEmpty) continue;
+      _sheetMetaById[id] = {
+        "id": id,
+        "name": (m['name'] ?? 'Sheet').toString(),
+        "order": (m['order'] ?? 0),
+      };
+    }
+  }
+
+  Map<String, List<Map<String, dynamic>>> _groupChangesBySheetId() {
     final map = <String, List<Map<String, dynamic>>>{};
 
     for (final ch in _changes.values) {
-      final sheet = (ch['sheetName'] ?? 'Unknown').toString();
-      (map[sheet] ??= []).add(ch);
+      final sheetId = (ch['sheetId'] ?? ch['sheetName'] ?? 'Unknown')
+          .toString();
+      (map[sheetId] ??= []).add(ch);
     }
 
     // Sort cells inside each sheet: latest first
@@ -55,27 +94,18 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
   String _fmtTs(int? ms) {
     if (ms == null || ms <= 0) return '-';
     final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    // hiển thị đơn giản cho tester
     return '${dt.hour.toString().padLeft(2, '0')}:'
         '${dt.minute.toString().padLeft(2, '0')}:'
         '${dt.second.toString().padLeft(2, '0')}';
   }
 
   String _displayValueOrFormula(Map<String, dynamic> cellObj) {
-    // ưu tiên formula nếu có
     final f = cellObj['formula'];
     if (f != null && f.toString().trim().isNotEmpty) return f.toString();
     final v = cellObj['value'];
     if (v == null) return '(empty)';
     final s = v.toString();
     return s.isEmpty ? '(empty)' : s;
-  }
-
-  String _makeKey(Map<String, dynamic> change) {
-    final sheet = (change['sheetName'] ?? '').toString();
-    final r = change['r'];
-    final c = change['c'];
-    return '$sheet#$r#$c';
   }
 
   @override
@@ -89,7 +119,6 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
           onNavigationRequest: (req) {
             final url = req.url;
 
-            // ✅ luôn cho phép local
             final isLocal =
                 url.startsWith('flutter-asset://') ||
                 url.startsWith('file://') ||
@@ -97,7 +126,6 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
 
             if (isLocal) return NavigationDecision.navigate;
 
-            // DEV: tạm cho CDN để bạn test nhanh
             if (!kReleaseMode) {
               final allowDevCdn = url.startsWith('https://cdn.jsdelivr.net');
               return allowDevCdn
@@ -105,7 +133,6 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
                   : NavigationDecision.prevent;
             }
 
-            // PROD: chặn hết ngoài local
             return NavigationDecision.prevent;
           },
         ),
@@ -142,9 +169,36 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
           setState(() => _status = 'Active sheet: ${obj['sheet']}');
           return;
 
-        // Realtime single-cell update
+        // ✅ NEW: sheet ops watcher (add/rename/delete/reorder)
+        case 'sheet_ops':
+          final ops = (obj['ops'] as List? ?? const [])
+              .map((e) => (e as Map).cast<String, dynamic>())
+              .toList();
+
+          final sheets = (obj['sheets'] as List? ?? const []);
+          _upsertSheetMetaFromSheetsList(sheets);
+
+          for (final op in ops) {
+            final sheet = (op['sheet'] as Map?)?.cast<String, dynamic>() ?? {};
+            final id = (sheet['id'] ?? sheet['index'] ?? sheet['name'] ?? '0')
+                .toString();
+
+            (_sheetOpsById[id] ??= []).add({
+              ...op,
+              "ts": obj["ts"] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+
+          setState(() {
+            _status = 'Sheet ops: +${ops.length}';
+          });
+          return;
+
+        // ✅ realtime single-cell update (includes style)
         case 'cell_change':
           final change = (obj['change'] as Map).cast<String, dynamic>();
+          _upsertSheetMetaFromChange(change);
+
           final key = _makeKey(change);
           _changes[key] = change;
 
@@ -159,6 +213,7 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
           final list = (obj['changes'] as List).cast<dynamic>();
           for (final item in list) {
             final change = (item as Map).cast<String, dynamic>();
+            _upsertSheetMetaFromChange(change);
             _changes[_makeKey(change)] = change;
           }
           setState(
@@ -169,26 +224,9 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
         case 'changes_cleared':
           setState(() {
             _changes.clear();
+            _sheetOpsById.clear();
             _status = 'Changes cleared.';
           });
-          return;
-
-        // Existing export xlsx (optional)
-        case 'export_xlsx':
-          final b64 = (obj['b64'] ?? '') as String;
-          final fileName = (obj['fileName'] ?? 'edited.xlsx') as String;
-
-          if (b64.isEmpty) {
-            setState(() => _status = 'Export XLSX ERROR: empty base64');
-            return;
-          }
-
-          setState(() => _status = 'Exported XLSX from Web. Saving...');
-          _saveB64AsXlsx(b64, fileName);
-          return;
-
-        case 'export_err':
-          setState(() => _status = 'Export ERROR: ${obj['err']}');
           return;
 
         default:
@@ -238,17 +276,8 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
     );
   }
 
-  Future<void> _requestExportAndSaveXlsx() async {
-    if (!_webReady) {
-      setState(() => _status = 'Web not ready yet.');
-      return;
-    }
-    setState(() => _status = 'Exporting XLSX from web...');
-    await _controller.runJavaScript('exportXlsxToFlutter();');
-  }
-
   Future<void> _saveDraftChangesJson() async {
-    if (_changes.isEmpty) {
+    if (_changes.isEmpty && _sheetOpsById.isEmpty) {
       setState(() => _status = 'No changes to save.');
       return;
     }
@@ -266,10 +295,12 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
     );
 
     final payload = {
-      "docId": "demo-doc", // sau này BE cấp
-      "userId": "demo-user", // sau này auth cấp
+      "docId": "demo-doc",
+      "userId": "demo-user",
       "clientTs": DateTime.now().millisecondsSinceEpoch,
-      "changes": _changes.values.toList(),
+      "sheetMeta": _sheetMetaById,
+      "sheetOps": _sheetOpsById,
+      "cellChanges": _changes.values.toList(),
     };
 
     final pretty = const JsonEncoder.withIndent('  ').convert(payload);
@@ -278,39 +309,31 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
     setState(() => _status = 'Saved draft JSON: ${p.basename(outFile.path)}');
   }
 
-  Future<void> _saveB64AsXlsx(String b64, String suggestedName) async {
-    final bytes = base64Decode(b64);
-
-    final savePath = await FilePicker.platform.saveFile(
-      dialogTitle: 'Save As .xlsx',
-      fileName: suggestedName.endsWith('.xlsx')
-          ? suggestedName
-          : '$suggestedName.xlsx',
-      type: FileType.custom,
-      allowedExtensions: const ['xlsx'],
-    );
-    if (savePath == null) {
-      setState(() => _status = 'Save cancelled.');
-      return;
-    }
-
-    final outFile = File(
-      savePath.endsWith('.xlsx') ? savePath : '$savePath.xlsx',
-    );
-    await outFile.writeAsBytes(bytes, flush: true);
-
-    setState(() => _status = 'Saved: ${p.basename(outFile.path)}');
-  }
-
   @override
   Widget build(BuildContext context) {
-    final changesList = _changes.values.toList()
-      ..sort(
-        (a, b) =>
-            ((b['lastTs'] ?? 0) as int).compareTo((a['lastTs'] ?? 0) as int),
-      );
-    final grouped = _groupChangesBySheet();
-    final sheetNames = grouped.keys.toList()..sort();
+    final grouped = _groupChangesBySheetId();
+
+    final allSheetIds = <String>{
+      ...grouped.keys,
+      ..._sheetOpsById.keys,
+    }.toList();
+
+    // Sort by order then name
+    allSheetIds.sort((a, b) {
+      final ao = (_sheetMetaById[a]?['order'] ?? 0) as num;
+      final bo = (_sheetMetaById[b]?['order'] ?? 0) as num;
+      final od = ao.compareTo(bo);
+      if (od != 0) return od;
+      final an = (_sheetMetaById[a]?['name'] ?? a).toString();
+      final bn = (_sheetMetaById[b]?['name'] ?? b).toString();
+      return an.compareTo(bn);
+    });
+
+    final totalOps = _sheetOpsById.values.fold<int>(
+      0,
+      (sum, list) => sum + list.length,
+    );
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('POC: Luckysheet in WebView'),
@@ -344,11 +367,12 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(10),
             color: Colors.black12,
-            child: Text('Status: $_status | changes=${_changes.length}'),
+            child: Text(
+              'Status: $_status | sheets=${allSheetIds.length} | '
+              'cellChanges=${_changes.length} | sheetOps=$totalOps',
+            ),
           ),
           const Divider(height: 1),
-
-          // Viewer: show changes collected by Flutter
           Expanded(
             child: Row(
               children: [
@@ -359,55 +383,36 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
                 const VerticalDivider(width: 1),
                 Expanded(
                   flex: 1,
-                  child: Container(
+                  child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: _changes.isEmpty
+                    child: allSheetIds.isEmpty
                         ? const Center(
                             child: Text(
-                              'No changes yet.\nEdit some cells to see logs.',
+                              'No changes yet.\nEdit cells / change style / add sheet to see logs.',
                               textAlign: TextAlign.center,
                             ),
                           )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              // Header summary
-                              Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: Colors.black12),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  'Sheets changed: ${sheetNames.length}\nTotal changed cells: ${_changes.length}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 10),
+                        : ListView.separated(
+                            itemCount: allSheetIds.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, idx) {
+                              final sheetId = allSheetIds[idx];
+                              final sheetName =
+                                  (_sheetMetaById[sheetId]?['name'] ?? 'Sheet')
+                                      .toString();
+                              final items = grouped[sheetId] ?? const [];
+                              final ops = _sheetOpsById[sheetId] ?? const [];
 
-                              // Sheet sections
-                              Expanded(
-                                child: ListView.separated(
-                                  itemCount: sheetNames.length,
-                                  separatorBuilder: (_, __) =>
-                                      const SizedBox(height: 8),
-                                  itemBuilder: (context, idx) {
-                                    final sheet = sheetNames[idx];
-                                    final items = grouped[sheet] ?? const [];
-
-                                    return SheetChangesCard(
-                                      sheetName: sheet,
-                                      items: items,
-                                      fmtTs: _fmtTs,
-                                      displayValueOrFormula:
-                                          _displayValueOrFormula,
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
+                              return SheetChangesCard(
+                                sheetId: sheetId,
+                                sheetName: sheetName,
+                                items: items,
+                                sheetOps: ops,
+                                fmtTs: _fmtTs,
+                                displayValueOrFormula: _displayValueOrFormula,
+                              );
+                            },
                           ),
                   ),
                 ),

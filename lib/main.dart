@@ -320,8 +320,14 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
 
     // Sort by order then name
     allSheetIds.sort((a, b) {
-      final ao = (_sheetMetaById[a]?['order'] ?? 0) as num;
-      final bo = (_sheetMetaById[b]?['order'] ?? 0) as num;
+      final aoRaw = _sheetMetaById[a]?['order'];
+      final boRaw = _sheetMetaById[b]?['order'];
+      final ao = (aoRaw is num)
+          ? aoRaw
+          : (int.tryParse(aoRaw?.toString() ?? '') ?? 0);
+      final bo = (boRaw is num)
+          ? boRaw
+          : (int.tryParse(boRaw?.toString() ?? '') ?? 0);
       final od = ao.compareTo(bo);
       if (od != 0) return od;
       final an = (_sheetMetaById[a]?['name'] ?? a).toString();

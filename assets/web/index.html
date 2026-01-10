@@ -307,6 +307,49 @@
             } catch (_) { }
         }
 
+        // ===== Style change detection =====
+        let __lastSelectedRange = null;
+        let __lastCellSnapshots = new Map(); // key = "sheetId#r#c", value = cell snapshot
+
+        function getCellSnapshot(sheetOrder, r, c) {
+            const cell = getCellObjectByOrder(sheetOrder, r, c);
+            return normalizeCell(cell);
+        }
+
+        function checkStyleChangesOnRange(range) {
+            if (!range || !Array.isArray(range)) return;
+            
+            const sheet = getActiveSheetMeta();
+            const r1 = Math.min(range[0].row[0], range[0].row[1]);
+            const r2 = Math.max(range[0].row[0], range[0].row[1]);
+            const c1 = Math.min(range[0].column[0], range[0].column[1]);
+            const c2 = Math.max(range[0].column[0], range[0].column[1]);
+
+            for (let r = r1; r <= r2; r++) {
+                for (let c = c1; c <= c2; c++) {
+                    const key = `${sheet.id}#${r}#${c}`;
+                    const newSnap = getCellSnapshot(sheet.order, r, c);
+                    const oldSnap = __lastCellSnapshots.get(key);
+
+                    if (oldSnap) {
+                        // Check if style changed
+                        const oldStyle = JSON.stringify(oldSnap.style || {});
+                        const newStyle = JSON.stringify(newSnap.style || {});
+                        
+                        if (oldStyle !== newStyle) {
+                            // Style changed! Record it
+                            recordCellChange(r, c, 
+                                { v: oldSnap.value, f: oldSnap.formula, m: oldSnap.display, ...oldSnap.style },
+                                { v: newSnap.value, f: newSnap.formula, m: newSnap.display, ...newSnap.style }
+                            );
+                        }
+                    }
+                    
+                    __lastCellSnapshots.set(key, newSnap);
+                }
+            }
+        }
+
         function createWithHooks(options) {
             options.hook = options.hook || {};
 
@@ -317,11 +360,49 @@
                 const oldCell = args.length >= 3 ? args[2] : null;
                 const newCell = args.length >= 4 ? args[3] : null;
                 recordCellChange(r, c, oldCell, newCell);
+                
+                // Update snapshot
+                const sheet = getActiveSheetMeta();
+                const key = `${sheet.id}#${r}#${c}`;
+                __lastCellSnapshots.set(key, normalizeCell(newCell));
             };
 
             options.hook.sheetActivate = function () {
                 const s = getActiveSheetMeta();
                 postToFlutter({ type: "sheet_activate", sheet: s });
+            };
+
+            // NEW: Capture range selection - save snapshots
+            options.hook.rangeSelect = function (sheet, range) {
+                if (!range || !Array.isArray(range) || range.length === 0) return;
+                
+                __lastSelectedRange = range;
+                
+                // Save snapshots of selected cells
+                const sheetMeta = getActiveSheetMeta();
+                const r1 = Math.min(range[0].row[0], range[0].row[1]);
+                const r2 = Math.max(range[0].row[0], range[0].row[1]);
+                const c1 = Math.min(range[0].column[0], range[0].column[1]);
+                const c2 = Math.max(range[0].column[0], range[0].column[1]);
+
+                for (let r = r1; r <= r2; r++) {
+                    for (let c = c1; c <= c2; c++) {
+                        const key = `${sheetMeta.id}#${r}#${c}`;
+                        const snap = getCellSnapshot(sheetMeta.order, r, c);
+                        __lastCellSnapshots.set(key, snap);
+                    }
+                }
+            };
+
+            // NEW: After any render, check for style changes
+            options.hook.cellRenderAfter = function (cell, position, sheet, ctx) {
+                // Debounced check
+                if (window.__styleCheckTimer) clearTimeout(window.__styleCheckTimer);
+                window.__styleCheckTimer = setTimeout(() => {
+                    if (__lastSelectedRange) {
+                        checkStyleChangesOnRange(__lastSelectedRange);
+                    }
+                }, 300);
             };
 
             luckysheet.create(options);

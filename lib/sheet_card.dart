@@ -25,6 +25,38 @@ class SheetChangesCard extends StatefulWidget {
 
   @override
   State<SheetChangesCard> createState() => SheetChangesCardState();
+
+  static String _formatStyle(Map<String, dynamic> style) {
+    if (style.isEmpty) return '(no style)';
+    final parts = <String>[];
+
+    if (style['bg'] != null) parts.add('bg:${style['bg']}');
+    if (style['fc'] != null) parts.add('fc:${style['fc']}');
+    if (style['ff'] != null) parts.add('font:${style['ff']}');
+    if (style['fs'] != null) parts.add('size:${style['fs']}');
+    if (style['bl'] == 1 || style['bl'] == true) parts.add('bold');
+    if (style['it'] == 1 || style['it'] == true) parts.add('italic');
+    if (style['ul'] == 1 || style['ul'] == true) parts.add('underline');
+    if (style['cl'] == 1 || style['cl'] == true) parts.add('strikethrough');
+    if (style['ht'] != null) parts.add('align:${style['ht']}');
+    if (style['vt'] != null) parts.add('valign:${style['vt']}');
+
+    return parts.isEmpty ? '(no style)' : parts.join(', ');
+  }
+
+  static bool _hasStyleChange(
+    Map<String, dynamic> oldStyle,
+    Map<String, dynamic> newStyle,
+  ) {
+    final oldKeys = oldStyle.keys.toSet();
+    final newKeys = newStyle.keys.toSet();
+    final allKeys = {...oldKeys, ...newKeys};
+
+    for (final key in allKeys) {
+      if (oldStyle[key] != newStyle[key]) return true;
+    }
+    return false;
+  }
 }
 
 class SheetChangesCardState extends State<SheetChangesCard> {
@@ -158,6 +190,15 @@ class SheetChangesCardState extends State<SheetChangesCard> {
                   final oldText = widget.displayValueOrFormula(oldObj);
                   final newText = widget.displayValueOrFormula(newObj);
 
+                  final oldStyle =
+                      (oldObj['style'] as Map?)?.cast<String, dynamic>() ?? {};
+                  final newStyle =
+                      (newObj['style'] as Map?)?.cast<String, dynamic>() ?? {};
+                  final hasStyleChange = SheetChangesCard._hasStyleChange(
+                    oldStyle,
+                    newStyle,
+                  );
+
                   return Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
@@ -233,6 +274,35 @@ class SheetChangesCardState extends State<SheetChangesCard> {
                                 newText,
                                 style: const TextStyle(fontSize: 13),
                               ),
+                              if (hasStyleChange) ...[
+                                const SizedBox(height: 12),
+                                const Divider(height: 1),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'STYLE CHANGES:',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.blue.shade700,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Old: ${SheetChangesCard._formatStyle(oldStyle)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'New: ${SheetChangesCard._formatStyle(newStyle)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),

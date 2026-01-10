@@ -4,13 +4,23 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; 
+                   img-src 'self' data: blob:; 
+                   style-src 'self' 'unsafe-inline'; 
+                   script-src 'self' 'unsafe-inline'; 
+                   connect-src 'none';">
     <title>Luckysheet in Flutter WebView</title>
 
-    <!-- Luckysheet CSS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/assets/iconfont/iconfont.css" />
+    <link rel="stylesheet" href="vendor/luckysheet/pluginsCss.css" />
+    <link rel="stylesheet" href="vendor/luckysheet/plugins.css" />
+    <link rel="stylesheet" href="vendor/luckysheet/luckysheet.css" />
+    <link rel="stylesheet" href="vendor/luckysheet/iconfont.css" />
+    
+    <script src="vendor/luckysheet/plugin.js"></script>
+    <script src="vendor/luckysheet/luckysheet.umd.js"></script>
+    
+    <!-- nếu cần import xlsx -->
+    <script src="vendor/luckyexcel/luckyexcel.umd.js"></script>
 
     <style>
         html,
@@ -63,13 +73,6 @@
     </div>
 
     <div id="luckysheet"></div>
-
-    <!-- Luckysheet JS -->
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js"></script>
-
-    <!-- LuckyExcel (xlsx -> luckysheet json) -->
-    <script src="https://cdn.jsdelivr.net/npm/luckyexcel/dist/luckyexcel.umd.js"></script>
 
     <script>
         function postToFlutter(obj) {

@@ -223,15 +223,9 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
       //           url.startsWith('flutter-asset://') ||
       //           url.startsWith('file://') ||
       //           url.startsWith('about:blank');
-      //       if (isLocal) return NavigationDecision.navigate;
-      //       // DEV allow CDN
-      //       if (!kReleaseMode) {
-      //         final allowDevCdn = url.startsWith('https://cdn.jsdelivr.net');
-      //         return allowDevCdn
-      //             ? NavigationDecision.navigate
-      //             : NavigationDecision.prevent;
-      //       }
-      //       return NavigationDecision.prevent;
+      //       return isLocal
+      //           ? NavigationDecision.navigate
+      //           : NavigationDecision.prevent;
       //     },
       //   ),
       // )
@@ -1309,34 +1303,34 @@ class _DetailsPanel extends StatelessWidget {
 
           const Spacer(),
 
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: onGoToCell,
-              icon: const Icon(Icons.navigation_outlined),
-              label: const Text('Go to cell'),
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: onCopyDiff,
-              icon: const Icon(Icons.copy),
-              label: const Text('Copy diff'),
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: onToggleReviewed,
-              icon: Icon(
-                reviewed ? Icons.check_circle : Icons.check_circle_outline,
-              ),
-              label: Text(reviewed ? 'Reviewed' : 'Mark reviewed'),
-            ),
-          ),
+          // SizedBox(
+          //   width: double.infinity,
+          //   child: OutlinedButton.icon(
+          //     onPressed: onGoToCell,
+          //     icon: const Icon(Icons.navigation_outlined),
+          //     label: const Text('Go to cell'),
+          //   ),
+          // ),
+          // const SizedBox(height: 8),
+          // SizedBox(
+          //   width: double.infinity,
+          //   child: ElevatedButton.icon(
+          //     onPressed: onCopyDiff,
+          //     icon: const Icon(Icons.copy),
+          //     label: const Text('Copy diff'),
+          //   ),
+          // ),
+          // const SizedBox(height: 8),
+          // SizedBox(
+          //   width: double.infinity,
+          //   child: OutlinedButton.icon(
+          //     onPressed: onToggleReviewed,
+          //     icon: Icon(
+          //       reviewed ? Icons.check_circle : Icons.check_circle_outline,
+          //     ),
+          //     label: Text(reviewed ? 'Reviewed' : 'Mark reviewed'),
+          //   ),
+          // ),
         ],
       ),
     );

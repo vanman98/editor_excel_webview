@@ -215,30 +215,26 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: (req) {
-            final url = req.url;
-
-            final isLocal =
-                url.startsWith('flutter-asset://') ||
-                url.startsWith('file://') ||
-                url.startsWith('about:blank');
-
-            if (isLocal) return NavigationDecision.navigate;
-
-            // DEV allow CDN
-            if (!kReleaseMode) {
-              final allowDevCdn = url.startsWith('https://cdn.jsdelivr.net');
-              return allowDevCdn
-                  ? NavigationDecision.navigate
-                  : NavigationDecision.prevent;
-            }
-
-            return NavigationDecision.prevent;
-          },
-        ),
-      )
+      // ..setNavigationDelegate(
+      //   NavigationDelegate(
+      //     onNavigationRequest: (req) {
+      //       final url = req.url;
+      //       final isLocal =
+      //           url.startsWith('flutter-asset://') ||
+      //           url.startsWith('file://') ||
+      //           url.startsWith('about:blank');
+      //       if (isLocal) return NavigationDecision.navigate;
+      //       // DEV allow CDN
+      //       if (!kReleaseMode) {
+      //         final allowDevCdn = url.startsWith('https://cdn.jsdelivr.net');
+      //         return allowDevCdn
+      //             ? NavigationDecision.navigate
+      //             : NavigationDecision.prevent;
+      //       }
+      //       return NavigationDecision.prevent;
+      //     },
+      //   ),
+      // )
       ..addJavaScriptChannel(
         'Flutter',
         onMessageReceived: (msg) => _handleWebMessage(msg.message),
@@ -464,12 +460,12 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
     final r = _toInt(ch['r']);
     final c = _toInt(ch['c']);
 
-    // Thử ưu tiên sheetIndex/sheetId/order để activate sheet
+    // Get sheet identifiers
     final sheetIndex = _toStr(
       ch['sheetIndex'],
       fallback: _toStr(ch['sheetId']),
     );
-    final order = ch['sheetOrder'];
+    final order = _toInt(ch['sheetOrder'], fallback: -1);
 
     final js =
         '''
@@ -477,24 +473,33 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
   try{
     if(!window.luckysheet) return;
 
-    // activate sheet (tùy version luckysheet, có thể nhận index string hoặc order)
-    try { if(luckysheet.setSheetActive && ${jsonEncode(sheetIndex)}){
-      luckysheet.setSheetActive(${jsonEncode(sheetIndex)});
-    }} catch(e){}
+    // Try to activate sheet by index/id string first
+    try { 
+      if(luckysheet.setSheetActive && ${jsonEncode(sheetIndex)}){
+        luckysheet.setSheetActive(${jsonEncode(sheetIndex)});
+      }
+    } catch(e){ console.log('setSheetActive by index failed:', e); }
 
-    try { if(luckysheet.setSheetActive && ${jsonEncode(order)}!=null){
-      luckysheet.setSheetActive(${jsonEncode(order)});
-    }} catch(e){}
+    // Try to activate by order number if index failed
+    try { 
+      if(luckysheet.setSheetActive && ${order} >= 0){
+        luckysheet.setSheetActive(${order});
+      }
+    } catch(e){ console.log('setSheetActive by order failed:', e); }
 
     // show selection + scroll
-    try { if(luckysheet.setRangeShow){
-      luckysheet.setRangeShow({row:[${r},${r}],column:[${c},${c}]});
-    }} catch(e){}
+    try { 
+      if(luckysheet.setRangeShow){
+        luckysheet.setRangeShow({row:[${r},${r}],column:[${c},${c}]});
+      }
+    } catch(e){ console.log('setRangeShow failed:', e); }
 
-    try { if(luckysheet.scrollToCell){
-      luckysheet.scrollToCell(${r},${c});
-    }} catch(e){}
-  }catch(e){}
+    try { 
+      if(luckysheet.scrollToCell){
+        luckysheet.scrollToCell(${r},${c});
+      }
+    } catch(e){ console.log('scrollToCell failed:', e); }
+  }catch(e){ console.log('goToCell failed:', e); }
 })();
 ''';
     await _controller.runJavaScript(js);
@@ -514,6 +519,11 @@ class _LuckysheetPocPageState extends State<LuckysheetPocPage> {
           .toList();
 
       final cellCount = changes.length;
+
+      // Only show sheets that have changes or operations (newly created, renamed, etc.)
+      // Don't show sheets that were just imported with no activity
+      if (cellCount == 0 && ops == 0) continue;
+
       final lastTs = changes.isEmpty
           ? 0
           : changes
@@ -917,14 +927,14 @@ class _TrackerTopBar extends StatelessWidget {
                 const SizedBox(width: 8),
                 _pill('Formula', '$totalFormula'),
                 const SizedBox(width: 12),
-                chip('All', ChangeFilter.all),
-                const SizedBox(width: 8),
-                chip('Value', ChangeFilter.value),
-                const SizedBox(width: 8),
-                chip('Formula', ChangeFilter.formula),
-                const SizedBox(width: 8),
-                chip('Style', ChangeFilter.style),
-                const SizedBox(width: 12),
+                // chip('All', ChangeFilter.all),
+                // const SizedBox(width: 8),
+                // chip('Value', ChangeFilter.value),
+                // const SizedBox(width: 8),
+                // chip('Formula', ChangeFilter.formula),
+                // const SizedBox(width: 8),
+                // chip('Style', ChangeFilter.style),
+                // const SizedBox(width: 12),
                 SizedBox(
                   width: 240,
                   height: 40,
@@ -1281,23 +1291,20 @@ class _DetailsPanel extends StatelessWidget {
           const Divider(height: 1),
           const SizedBox(height: 10),
 
-          Text(
-            'STYLE CHANGES:',
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: Colors.blue.shade700,
-            ),
+          const Text(
+            'Style Changes',
+            style: TextStyle(fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           if (!styleChanged)
             const Text(
               'No style changes',
               style: TextStyle(color: Colors.black54),
             )
           else ...[
-            _small('Old: ${_formatStyle(oldStyle)}'),
-            const SizedBox(height: 4),
-            _small('New: ${_formatStyle(newStyle)}'),
+            _kv('OLD', _formatStyle(oldStyle)),
+            const SizedBox(height: 8),
+            _kvHighlight('NEW', _formatStyle(newStyle)),
           ],
 
           const Spacer(),
@@ -1361,9 +1368,6 @@ class _DetailsPanel extends StatelessWidget {
       ),
     );
   }
-
-  static Widget _small(String t) =>
-      Text(t, style: const TextStyle(fontSize: 12));
 
   static String _formatStyle(Map<String, dynamic> style) {
     if (style.isEmpty) return '(no style)';
